@@ -53,7 +53,7 @@ export function spawnScene(fmbe, scene, placement) {
             if (target === undefined) return handle;
             running.delete(name);
             if (groups.has(target)) groups.get(target).stop();
-            else if (displays.has(target)) displays.get(target).stop();
+            else if (displays.has(target)) parentOf.get(target).stopChild(displays.get(target));
             return handle;
         },
         /** Changes a display or group immediately; pos/rot/scale are local to its group. */

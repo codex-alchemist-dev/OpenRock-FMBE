@@ -247,10 +247,12 @@ await test("group sweep: a 360 yaw spin is exact - the client formulas put every
     tick(1);
     g.tween({ rot: [0, 30 + 360, 0] }, { ticks: 80, loop: "repeat" });
     const cmd = entities[0].commands.filter(c => c.includes("animation.player.attack.positions")).at(-1);
-    assert.ok(cmd.includes("math.mod(v.fm_ywg1+"), cmd);
+    assert.ok(cmd.includes("math.mod(") && cmd.includes("q.life_time"), cmd);
     const expr = expressionOf(cmd);
+    let sim = null;
     for (const life of [0, 1, 1.7, 2.5, 3.9]) {
-        const vars = { "v.fm_tg1": 0 };
+        if (!sim) { sim = {}; run(expr, sim, { query: { life_time: 0 } }); } // the client latches the start time on its first frame
+        const vars = sim;
         run(expr, vars, { query: { life_time: life } });
         const theta = 30 + 360 * (life / 4);
         const w = composeTransforms(composeTransforms({ pos: [20, 64, 20], rot: [0, theta, 0], scale: 2 }, { pos: [0, 1, 0], rot: [0, 10, 0], scale: 0.5 }), { pos: [1.5, 0.25, -1], rot: [15, 40, 5], scale: 0.8 });
@@ -263,7 +265,42 @@ await test("group sweep: a 360 yaw spin is exact - the client formulas put every
     tick(1);
     g.stop();
     assert.ok(!entities[0].commands.at(-1).includes("q.life_time"), "stopped: plain numbers again");
-    assert.throws(() => g.tween({ rot: [45, 0, 0] }, { loop: "repeat" }), /yaw-only/);
+    assert.throws(() => g.tween({ rot: [45, 0, 0] }, { loop: "repeat" }), /vertical axis/);
+});
+
+await test("simultaneous animations compose: a bobbing group carrying a spinning sub-group carrying a pulsing display, exact against the matrix math", async () => {
+    const req = (await import("module")).createRequire(import.meta.url);
+    const { run, expressionOf } = req("../scripts/fmbe/molangEval.cjs");
+    const { composeTransforms } = req("../scripts/fmbe/matrix.cjs");
+    const { easedProgress } = await import("../scripts/fmbe/runtime/sample.js");
+    const { fmbe, overworld, tick, entities } = setup();
+    const root = fmbe.group({ dimension: overworld, local: { pos: [20, 64, 20], rot: [0, 10, 0], scale: 1 } });
+    const ring = root.addGroup({ pos: [0, 1, 0], rot: [0, 0, 0], scale: 1 });
+    const gem = ring.add({ item: "minecraft:diamond" }, { pos: [1, 0, 0.5], rot: [0, 20, 0], scale: 0.5 });
+    tick(1);
+    const bob = { ticks: 40, ease: "inOutSine", loop: "pingpong" }, spin = { ticks: 80, ease: "linear", loop: "repeat" }, pulse = { ticks: 20, ease: "outQuad", loop: "pingpong" };
+    root.tween({ pos: [20, 66, 20] }, bob);
+    ring.tween({ rot: [0, 360, 0] }, spin);
+    ring.updateChild(gem, { scale: 1 }, pulse);
+    const cmd = entities[0].commands.filter(c => c.includes("animation.player.attack.positions")).at(-1);
+    const expr = expressionOf(cmd);
+    const env = {};
+    run(expr, env, { query: { life_time: 0 } });
+    for (const life of [0.25, 0.9, 1.5, 2.2, 3.7]) {
+        run(expr, env, { query: { life_time: life } });
+        const t = life * 20;
+        const rootY = 64 + 2 * easedProgress(bob, t);
+        const spinYaw = 360 * easedProgress(spin, t);
+        const scale = 0.5 + 0.5 * easedProgress(pulse, t);
+        const w = composeTransforms(composeTransforms(composeTransforms({ pos: [0, 0, 0], rot: [0, 0, 0], scale: 1 }, { pos: [20, rootY, 20], rot: [0, 10, 0], scale: 1 }), { pos: [0, 1, 0], rot: [0, spinYaw, 0], scale: 1 }), { pos: [1, 0, 0.5], rot: [0, 20, 0], scale });
+        near(gem.anchor.x + env["v.xpos"] / 16, w.pos[0], 1e-4);
+        near(gem.anchor.y + env["v.ypos"] / 16, w.pos[1], 1e-4);
+        near(gem.anchor.z + env["v.zpos"] / 16, w.pos[2], 1e-4);
+        near(((env["v.yrot"] - w.rot[1]) % 360 + 540) % 360 - 180, 0, 1e-3);
+        near(env["v.scale"], w.scale, 1e-6);
+    }
+    root.stop();
+    assert.ok(!entities[0].commands.at(-1).includes("q.life_time"), "stop() freezes everything to plain numbers");
 });
 
 await test("scenes: compiled data spawns groups and displays, auto animations start, play/stop/set work, remove cleans up", () => {
@@ -285,11 +322,11 @@ await test("scenes: compiled data spawns groups and displays, auto animations st
     assert.strictEqual(entities.filter(e => e.isValid).length, 2);
     assert.ok(s.displays.get("gem").spec.vars.some(([n]) => n.startsWith("v.fm_t")), "auto animation started on the child of the spinning group");
     s.play("bob");
-    assert.ok(s.displays.get("base").running);
+    assert.ok(Object.keys(s.root.children.find(c => c.display === s.displays.get("base")).anims).includes("pos"), "a display animation runs alongside the group's");
     s.stop("bob");
-    assert.strictEqual(s.displays.get("base").running, null);
+    assert.deepStrictEqual(s.root.children.find(c => c.display === s.displays.get("base")).anims, {});
     s.set("gem", { scale: 1 });
-    near(s.displays.get("gem").spec.scale, 1);
+    near(s.groups.get("ring").children[0].local.scale, 1);
     assert.throws(() => s.play("nope"), /no animation/);
     s.remove();
     assert.ok(entities.every(e => !e.isValid));
